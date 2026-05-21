@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operador — Church Translator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;900&display=swap">
+  <link rel="stylesheet" href="/css/styles.css">
+  <meta name="theme-color" content="#0F0F0F">
+</head>
+<body>
+  <div class="container">
+    <h1>Panel de Operador</h1>
+
+    <div id="status" class="status status-idle">Conectando...</div>
+
+    <div class="card">
+      <label>Nivel de audio</label>
+      <div class="audio-level-container">
+        <div id="audio-level" class="audio-level-bar"></div>
+      </div>
+      <div id="vad-indicator" class="vad-status vad-silent">En silencio (pausado)</div>
+    </div>
+
+    <div class="btn-group">
+      <button id="start-btn" class="btn-success" disabled>Iniciar</button>
+      <button id="stop-btn" class="btn-danger" disabled>Detener</button>
+    </div>
+
+    <div class="info-row">
+      <span>Personas escuchando:</span>
+      <span id="listener-count">0</span>
+    </div>
+  </div>
+
+  <script type="module" src="/js/operator.js"></script>
+</body>
+</html>

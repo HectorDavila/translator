@@ -1,0 +1,29 @@
+{
+  "name": "church-translator",
+  "version": "1.0.0",
+  "description": "Real-time English to Spanish translation for church services using OpenAI Realtime Translation API",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server/index.ts",
+    "build:server": "tsc",
+    "build:client": "mkdir -p dist/client/js dist/client/css && cp src/client/js/*.js dist/client/js/ && cp src/client/css/*.css dist/client/css/ && cp src/client/*.html src/client/sw.js src/client/manifest.json dist/client/",
+    "build": "npm run build:server && npm run build:client",
+    "start": "node dist/server/index.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

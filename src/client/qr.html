@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Escanear — Church Translator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;900&display=swap">
+  <link rel="stylesheet" href="/css/styles.css">
+  <meta name="theme-color" content="#0F0F0F">
+</head>
+<body>
+  <div class="container container-qr">
+    <h1>¿Necesitas traducción?</h1>
+    <p class="subtitle">Escanea el siguiente código QR</p>
+
+    <div class="qr-frame">
+      <div id="qr-code" class="qr-canvas"></div>
+    </div>
+
+    <div class="qr-url-wrapper">
+      <label>O abre en tu navegador</label>
+      <div id="qr-url" class="qr-url">cargando...</div>
+    </div>
+
+    <div id="qr-warning" class="qr-warning" hidden></div>
+  </div>
+
+  <script src="/js/qrcode.min.js"></script>
+  <script type="module" src="/js/qr.js"></script>
+</body>
+</html>
