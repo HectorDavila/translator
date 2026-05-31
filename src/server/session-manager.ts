@@ -14,7 +14,7 @@ export class SessionManager {
     this.broadcaster = new Broadcaster();
 
     this.translator.onTranslatedAudio((audio) => {
-      this.broadcaster.broadcastAudio(audio);
+      this.broadcaster.broadcastAudio(Buffer.from(audio, "base64"));
     });
 
     this.translator.onOriginalTranscript((text) => {
@@ -46,8 +46,22 @@ export class SessionManager {
     this.operatorWs = ws;
     console.log("[Session] Operator connected");
 
-    ws.on("message", (data) => {
-      const message: OperatorMessage = JSON.parse(data.toString());
+    ws.on("message", (data, isBinary) => {
+      // Binary frames are raw PCM16 audio; text frames are JSON control messages.
+      if (isBinary) {
+        if (this.state === "active") {
+          this.translator.sendAudio((data as Buffer).toString("base64"));
+        }
+        return;
+      }
+
+      let message: OperatorMessage;
+      try {
+        message = JSON.parse(data.toString());
+      } catch {
+        console.error("[Session] Failed to parse operator message");
+        return;
+      }
       this.handleOperatorMessage(message);
     });
 
@@ -91,12 +105,6 @@ export class SessionManager {
 
       case "stop_session":
         this.stopSession();
-        break;
-
-      case "audio":
-        if (message.data && this.state === "active") {
-          this.translator.sendAudio(message.data);
-        }
         break;
     }
   }

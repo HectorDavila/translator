@@ -126,7 +126,13 @@ export class OpenAITranslator {
   }
 
   private handleMessage(raw: string): void {
-    const event: OpenAIEvent = JSON.parse(raw);
+    let event: OpenAIEvent;
+    try {
+      event = JSON.parse(raw);
+    } catch {
+      console.error("[OpenAI] Failed to parse message");
+      return;
+    }
 
     switch (event.type) {
       case "session.output_audio.delta":

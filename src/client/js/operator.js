@@ -18,6 +18,12 @@ const VAD_SILENCE_DELAY_MS = 1500; // keep sending for 1.5s after last speech de
 let isSpeaking = false;
 let lastSpeechTime = 0;
 
+// Pre-roll: buffer the most recent silent chunks (~100ms each) and flush them
+// when speech starts, so the onset of each utterance isn't clipped.
+const PREROLL_CHUNKS = 3;
+let prerollChunks = [];
+let sending = false;
+
 function getWsUrl() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${location.host}/ws/operator`;
@@ -82,15 +88,27 @@ async function startSession() {
     source.connect(workletNode);
 
     workletNode.port.onmessage = (event) => {
-      if (event.data.type === "audio" && ws?.readyState === WebSocket.OPEN) {
-        if (!isSpeaking) return;
+      if (event.data.type !== "audio") return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-        const pcm16 = event.data.data;
-        const base64 = int16ToBase64(pcm16);
-        ws.send(JSON.stringify({ type: "audio", data: base64 }));
+      const pcm16 = event.data.data;
+
+      if (isSpeaking) {
+        if (!sending) {
+          sending = true;
+          for (const chunk of prerollChunks) ws.send(chunk);
+          prerollChunks = [];
+        }
+        ws.send(pcm16); // binary PCM16 frame
+      } else {
+        sending = false;
+        prerollChunks.push(pcm16);
+        if (prerollChunks.length > PREROLL_CHUNKS) prerollChunks.shift();
       }
     };
 
+    prerollChunks = [];
+    sending = false;
     ws?.send(JSON.stringify({ type: "start_session" }));
 
     startBtn.disabled = true;
@@ -162,15 +180,6 @@ function updateVadIndicator() {
     vadIndicator.textContent = isSpeaking ? "Enviando audio" : "En silencio (pausado)";
     vadIndicator.className = isSpeaking ? "vad-status vad-active" : "vad-status vad-silent";
   }
-}
-
-function int16ToBase64(pcm16) {
-  const bytes = new Uint8Array(pcm16.buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
 
 setInterval(async () => {

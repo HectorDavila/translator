@@ -124,19 +124,27 @@ async function disconnect() {
 
 function connectWebSocket() {
   ws = new WebSocket(getWsUrl());
+  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     setStatus("Conectado — esperando traducción", "idle");
   };
 
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+    // Binary frames are raw PCM16 audio; text frames are JSON control messages.
+    if (typeof event.data !== "string") {
+      handleAudio(event.data);
+      return;
+    }
+
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
 
     switch (msg.type) {
-      case "audio":
-        handleAudio(msg.data);
-        break;
-
       case "transcript":
         if (msg.source === "translated") {
           appendText(translatedTextEl, msg.text);
@@ -160,8 +168,9 @@ function connectWebSocket() {
   };
 }
 
-function handleAudio(base64Pcm) {
-  const pcm16 = base64ToInt16(base64Pcm);
+function handleAudio(arrayBuffer) {
+  // PCM16 byte length must be even; guard against a truncated frame.
+  const pcm16 = new Int16Array(arrayBuffer, 0, arrayBuffer.byteLength >> 1);
   const float32 = new Float32Array(pcm16.length);
 
   for (let i = 0; i < pcm16.length; i++) {
@@ -195,15 +204,6 @@ function scheduleChunk(float32) {
 
   source.start(nextStartTime);
   nextStartTime += buffer.duration;
-}
-
-function base64ToInt16(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new Int16Array(bytes.buffer);
 }
 
 function appendText(el, text) {

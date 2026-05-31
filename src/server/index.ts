@@ -67,6 +67,11 @@ const wss = new WebSocketServer({ server });
 wss.on("connection", (ws, req) => {
   const path = req.url || "";
 
+  (ws as any).isAlive = true;
+  ws.on("pong", () => {
+    (ws as any).isAlive = true;
+  });
+
   if (path === "/ws/operator") {
     sessionManager.handleOperatorConnection(ws);
   } else if (path === "/ws/listener") {
@@ -75,6 +80,21 @@ wss.on("connection", (ws, req) => {
     ws.close(4000, "Invalid path. Use /ws/operator or /ws/listener");
   }
 });
+
+// Heartbeat: keep idle connections alive through NAT/proxy and drop dead ones.
+const HEARTBEAT_MS = 15000;
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if ((ws as any).isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    (ws as any).isAlive = false;
+    ws.ping();
+  }
+}, HEARTBEAT_MS);
+
+wss.on("close", () => clearInterval(heartbeat));
 
 server.listen(PORT, () => {
   console.log(`[Server] Running on http://localhost:${PORT}`);

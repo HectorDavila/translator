@@ -22,4 +22,4 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["node", "dist/server/index.js"]
+CMD ["node", "--max-old-space-size=768", "dist/server/index.js"]
