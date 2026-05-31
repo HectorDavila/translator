@@ -1,20 +1,27 @@
 import type { WebSocket } from "ws";
 import { OpenAITranslator } from "./openai-translator.js";
 import { Broadcaster } from "./broadcast.js";
+import type { AudioStreamer } from "./audio-stream.js";
 import type { SessionState, OperatorMessage } from "./types.js";
 
 export class SessionManager {
   private state: SessionState = "idle";
   private translator: OpenAITranslator;
   private broadcaster: Broadcaster;
+  private audioStreamer: AudioStreamer;
   private operatorWs: WebSocket | null = null;
 
-  constructor(apiKey: string, targetLanguage: string) {
+  constructor(
+    apiKey: string,
+    targetLanguage: string,
+    audioStreamer: AudioStreamer
+  ) {
     this.translator = new OpenAITranslator(apiKey, targetLanguage);
     this.broadcaster = new Broadcaster();
+    this.audioStreamer = audioStreamer;
 
     this.translator.onTranslatedAudio((audio) => {
-      this.broadcaster.broadcastAudio(Buffer.from(audio, "base64"));
+      this.audioStreamer.pushPcm(Buffer.from(audio, "base64"));
     });
 
     this.translator.onOriginalTranscript((text) => {

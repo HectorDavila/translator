@@ -1,9 +1,7 @@
 import type { WebSocket } from "ws";
 import type { ListenerMessage, ConnectedListener } from "./types.js";
 
-// Drop audio frames once a listener's send buffer exceeds this (~4s backlog).
-const MAX_AUDIO_BUFFER_BYTES = 256 * 1024;
-
+// Carries transcripts + status to listeners; audio goes over the /stream MP3.
 export class Broadcaster {
   private listeners: Set<ConnectedListener> = new Set();
 
@@ -18,15 +16,6 @@ export class Broadcaster {
     ws.on("error", () => {
       this.listeners.delete(listener);
     });
-  }
-
-  // Audio is sent as raw binary PCM16 frames (no base64/JSON overhead).
-  broadcastAudio(pcm: Buffer): void {
-    for (const listener of this.listeners) {
-      if (listener.ws.readyState !== listener.ws.OPEN) continue;
-      if (listener.ws.bufferedAmount > MAX_AUDIO_BUFFER_BYTES) continue;
-      listener.ws.send(pcm, { binary: true });
-    }
   }
 
   broadcastTranscript(source: "original" | "translated", text: string): void {

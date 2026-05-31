@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { networkInterfaces } from "os";
 import { SessionManager } from "./session-manager.js";
+import { AudioStreamer } from "./audio-stream.js";
 
 function getLanIp(): string | null {
   const nets = networkInterfaces();
@@ -60,7 +61,19 @@ app.get("/api/listener-url", (req, res) => {
   res.json({ url: `${protocol}://${req.get("host")}/listener.html`, source: "fallback" });
 });
 
-const sessionManager = new SessionManager(OPENAI_API_KEY, TARGET_LANGUAGE);
+const audioStreamer = new AudioStreamer();
+audioStreamer.start();
+
+// Continuous MP3 stream — played via <audio> so it survives a locked screen.
+app.get("/stream", (_req, res) => {
+  audioStreamer.addClient(res);
+});
+
+const sessionManager = new SessionManager(
+  OPENAI_API_KEY,
+  TARGET_LANGUAGE,
+  audioStreamer
+);
 
 const wss = new WebSocketServer({ server });
 

@@ -2,60 +2,15 @@ const statusEl = document.getElementById("status");
 const translatedTextEl = document.getElementById("translated-text");
 const connectBtn = document.getElementById("connect-btn");
 
-const SOURCE_SAMPLE_RATE = 24000;
-const TARGET_LEAD_S = 0.25;
-const MAX_LEAD_S = 1.5;
-const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+const STREAM_URL = "/stream";
+const MAX_DRIFT_S = 1.5; // speed up slightly if buffered further behind live than this
 
 let ws = null;
-let audioContext = null;
-let gainNode = null;
-let nextStartTime = 0;
-let isUnlocked = false;
-let pendingChunks = [];
+let player = null;
 let noSleep = null;
 let userDisconnected = false;
-let silentAudio = null;
-
-// A looping silent <audio> element promotes iOS to the "playback" audio
-// session, so Web Audio plays through the speaker even with the Ring/Silent
-// switch on. Must be started inside the user gesture (Conectar tap).
-function createSilentWavUrl(durationSec = 0.05, sampleRate = 8000) {
-  const numSamples = Math.floor(durationSec * sampleRate);
-  const buffer = new ArrayBuffer(44 + numSamples * 2);
-  const view = new DataView(buffer);
-  const writeStr = (offset, str) => {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-  };
-  writeStr(0, "RIFF");
-  view.setUint32(4, 36 + numSamples * 2, true);
-  writeStr(8, "WAVE");
-  writeStr(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, "data");
-  view.setUint32(40, numSamples * 2, true);
-  return URL.createObjectURL(new Blob([view], { type: "audio/wav" }));
-}
-
-function startSilentLoop() {
-  if (!silentAudio) {
-    silentAudio = new Audio(createSilentWavUrl());
-    silentAudio.loop = true;
-    silentAudio.setAttribute("playsinline", "");
-  }
-  const p = silentAudio.play();
-  if (p && p.catch) p.catch(() => {});
-}
-
-function stopSilentLoop() {
-  if (silentAudio) silentAudio.pause();
-}
+let stallTimer = null;
+let latencyGuard = null;
 
 async function enableNoSleep() {
   if (typeof NoSleep === "undefined") {
@@ -79,14 +34,13 @@ async function disableNoSleep() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (
-    document.visibilityState === "visible" &&
-    ws &&
-    ws.readyState === WebSocket.OPEN &&
-    noSleep &&
-    !noSleep.isEnabled
-  ) {
+  if (document.visibilityState !== "visible") return;
+  if (noSleep && !noSleep.isEnabled && player && !player.paused) {
     enableNoSleep();
+  }
+  // Audio keeps playing while locked, but nudge it if it stalled in background.
+  if (player && !userDisconnected && player.paused === false && player.readyState < 3) {
+    reloadStream();
   }
 });
 
@@ -100,38 +54,73 @@ function setStatus(text, type) {
   statusEl.className = `status status-${type}`;
 }
 
+function setupMediaSession() {
+  if (!("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: "Traducción en vivo",
+      artist: "Access GT",
+    });
+    navigator.mediaSession.setActionHandler("play", () => player && player.play());
+    navigator.mediaSession.setActionHandler("pause", () => player && player.pause());
+  } catch (_) {}
+}
+
+function createPlayer() {
+  player = new Audio();
+  player.preload = "none";
+  player.setAttribute("playsinline", "");
+
+  player.addEventListener("playing", () => {
+    if (statusEl.textContent === "" || statusEl.classList.contains("status-error")) {
+      setStatus("Conectado — esperando traducción", "idle");
+    }
+  });
+  player.addEventListener("stalled", reloadStream);
+  player.addEventListener("error", reloadStream);
+}
+
+// Reconnect to the live stream after a network drop / stall.
+function reloadStream() {
+  if (userDisconnected || !player) return;
+  if (stallTimer) return;
+  stallTimer = setTimeout(() => {
+    stallTimer = null;
+    if (userDisconnected || !player) return;
+    player.src = STREAM_URL;
+    player.play().catch(() => {});
+  }, 2000);
+}
+
+// Keep latency low: if the buffer drifts too far behind live, speed up gently.
+function startLatencyGuard() {
+  if (latencyGuard) return;
+  latencyGuard = setInterval(() => {
+    if (!player || player.paused) return;
+    const b = player.buffered;
+    if (!b.length) return;
+    const ahead = b.end(b.length - 1) - player.currentTime;
+    player.playbackRate = ahead > MAX_DRIFT_S ? 1.08 : 1.0;
+  }, 1000);
+}
+
 async function connect() {
-  if (!audioContext) {
-    audioContext = new AudioContextClass({ sampleRate: SOURCE_SAMPLE_RATE });
-    gainNode = audioContext.createGain();
-    gainNode.connect(audioContext.destination);
-    gainNode.gain.value = 1.0;
-  }
-
-  if (audioContext.state === "suspended") {
-    await audioContext.resume();
-  }
-
-  const silentBuffer = audioContext.createBuffer(1, 1, SOURCE_SAMPLE_RATE);
-  const silentSource = audioContext.createBufferSource();
-  silentSource.buffer = silentBuffer;
-  silentSource.connect(audioContext.destination);
-  silentSource.start(0);
-
-  startSilentLoop();
-
-  isUnlocked = true;
-  nextStartTime = audioContext.currentTime;
-
-  for (const chunk of pendingChunks) {
-    scheduleChunk(chunk);
-  }
-  pendingChunks = [];
-
-  await enableNoSleep();
+  if (!player) createPlayer();
+  setupMediaSession();
 
   userDisconnected = false;
+  player.src = STREAM_URL; // (re)connect at the live edge
+  try {
+    await player.play(); // requires the user gesture we're in
+  } catch (err) {
+    setStatus("Toca de nuevo para activar el audio", "error");
+    return;
+  }
+
+  await enableNoSleep();
+  startLatencyGuard();
   connectWebSocket();
+
   connectBtn.textContent = "Desconectar";
   connectBtn.classList.remove("btn-primary");
   connectBtn.classList.add("btn-danger");
@@ -150,14 +139,17 @@ async function disconnect() {
     ws = null;
   }
 
-  await disableNoSleep();
-  stopSilentLoop();
-
-  pendingChunks = [];
-  isUnlocked = false;
-  if (audioContext) {
-    nextStartTime = audioContext.currentTime;
+  if (player) {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
   }
+  if (stallTimer) {
+    clearTimeout(stallTimer);
+    stallTimer = null;
+  }
+
+  await disableNoSleep();
 
   translatedTextEl.textContent = "";
   setStatus("", "idle");
@@ -168,19 +160,10 @@ async function disconnect() {
 
 function connectWebSocket() {
   ws = new WebSocket(getWsUrl());
-  ws.binaryType = "arraybuffer";
 
-  ws.onopen = () => {
-    setStatus("Conectado — esperando traducción", "idle");
-  };
+  ws.onopen = () => {};
 
   ws.onmessage = (event) => {
-    // Binary frames are raw PCM16 audio; text frames are JSON control messages.
-    if (typeof event.data !== "string") {
-      handleAudio(event.data);
-      return;
-    }
-
     let msg;
     try {
       msg = JSON.parse(event.data);
@@ -203,51 +186,10 @@ function connectWebSocket() {
 
   ws.onclose = () => {
     if (userDisconnected) return;
-    setStatus("Desconectado — reconectando...", "error");
     setTimeout(connectWebSocket, 3000);
   };
 
-  ws.onerror = () => {
-    setStatus("Error de conexión", "error");
-  };
-}
-
-function handleAudio(arrayBuffer) {
-  // PCM16 byte length must be even; guard against a truncated frame.
-  const pcm16 = new Int16Array(arrayBuffer, 0, arrayBuffer.byteLength >> 1);
-  const float32 = new Float32Array(pcm16.length);
-
-  for (let i = 0; i < pcm16.length; i++) {
-    float32[i] = pcm16[i] / 32768;
-  }
-
-  if (!isUnlocked) {
-    pendingChunks.push(float32);
-    return;
-  }
-
-  scheduleChunk(float32);
-}
-
-function scheduleChunk(float32) {
-  if (!audioContext || !gainNode) return;
-
-  const now = audioContext.currentTime;
-  const lead = nextStartTime - now;
-
-  if (lead > MAX_LEAD_S || lead < 0) {
-    nextStartTime = now + TARGET_LEAD_S;
-  }
-
-  const buffer = audioContext.createBuffer(1, float32.length, SOURCE_SAMPLE_RATE);
-  buffer.getChannelData(0).set(float32);
-
-  const source = audioContext.createBufferSource();
-  source.buffer = buffer;
-  source.connect(gainNode);
-
-  source.start(nextStartTime);
-  nextStartTime += buffer.duration;
+  ws.onerror = () => {};
 }
 
 function appendText(el, text) {
@@ -265,8 +207,6 @@ function handleStatusChange(state) {
     case "active":
       setStatus("Traducción en vivo", "active");
       translatedTextEl.textContent = "";
-      nextStartTime = audioContext ? audioContext.currentTime : 0;
-      pendingChunks = [];
       break;
     case "idle":
       setStatus("Servicio en pausa", "idle");
@@ -278,7 +218,7 @@ function handleStatusChange(state) {
 }
 
 connectBtn.addEventListener("click", () => {
-  if (ws && ws.readyState !== WebSocket.CLOSED) {
+  if (player && !player.paused) {
     disconnect();
   } else {
     connect();
@@ -288,4 +228,3 @@ connectBtn.addEventListener("click", () => {
 window.addEventListener("pagehide", () => {
   disableNoSleep();
 });
-

@@ -1,4 +1,4 @@
-const CACHE_NAME = "church-translator-v2";
+const CACHE_NAME = "church-translator-v3";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
