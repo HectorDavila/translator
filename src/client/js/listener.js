@@ -15,6 +15,47 @@ let isUnlocked = false;
 let pendingChunks = [];
 let noSleep = null;
 let userDisconnected = false;
+let silentAudio = null;
+
+// A looping silent <audio> element promotes iOS to the "playback" audio
+// session, so Web Audio plays through the speaker even with the Ring/Silent
+// switch on. Must be started inside the user gesture (Conectar tap).
+function createSilentWavUrl(durationSec = 0.05, sampleRate = 8000) {
+  const numSamples = Math.floor(durationSec * sampleRate);
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, numSamples * 2, true);
+  return URL.createObjectURL(new Blob([view], { type: "audio/wav" }));
+}
+
+function startSilentLoop() {
+  if (!silentAudio) {
+    silentAudio = new Audio(createSilentWavUrl());
+    silentAudio.loop = true;
+    silentAudio.setAttribute("playsinline", "");
+  }
+  const p = silentAudio.play();
+  if (p && p.catch) p.catch(() => {});
+}
+
+function stopSilentLoop() {
+  if (silentAudio) silentAudio.pause();
+}
 
 async function enableNoSleep() {
   if (typeof NoSleep === "undefined") {
@@ -77,6 +118,8 @@ async function connect() {
   silentSource.connect(audioContext.destination);
   silentSource.start(0);
 
+  startSilentLoop();
+
   isUnlocked = true;
   nextStartTime = audioContext.currentTime;
 
@@ -108,6 +151,7 @@ async function disconnect() {
   }
 
   await disableNoSleep();
+  stopSilentLoop();
 
   pendingChunks = [];
   isUnlocked = false;
