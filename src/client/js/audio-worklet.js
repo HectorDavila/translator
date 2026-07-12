@@ -1,5 +1,13 @@
 const TARGET_SAMPLE_RATE = 24000;
 
+// Voice activity detection lives here, on the audio rendering thread, because
+// it keeps running when the screen locks or the tab is backgrounded — main
+// thread rAF/timers get throttled or suspended and would freeze the VAD,
+// silently stopping the broadcast.
+const VAD_RMS_THRESHOLD = 0.006; // ~-44 dBFS; raise if room noise leaks through
+const HANGOVER_CHUNKS = 15; // keep sending ~1.5s after speech stops
+const PREROLL_CHUNKS = 3; // ~300ms flushed retroactively so onsets aren't clipped
+
 class PCMCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -7,6 +15,9 @@ class PCMCaptureProcessor extends AudioWorkletProcessor {
     this.bufferLength = 0;
     this.resampleRatio = TARGET_SAMPLE_RATE / sampleRate;
     this.chunkSize = 2400; // ~100ms at 24kHz
+    this.preroll = [];
+    this.silentChunks = HANGOVER_CHUNKS;
+    this.speaking = false;
   }
 
   process(inputs) {
@@ -18,11 +29,44 @@ class PCMCaptureProcessor extends AudioWorkletProcessor {
     this.bufferLength += resampled.length;
 
     if (this.bufferLength >= this.chunkSize) {
-      const pcm16 = this.flushBuffer();
-      this.port.postMessage({ type: "audio", data: pcm16 }, [pcm16.buffer]);
+      this.emit(this.flushBuffer());
     }
 
     return true;
+  }
+
+  emit(pcm16) {
+    const rms = this.rms(pcm16);
+    this.silentChunks = rms >= VAD_RMS_THRESHOLD ? 0 : this.silentChunks + 1;
+    const speaking = this.silentChunks <= HANGOVER_CHUNKS;
+
+    if (speaking) {
+      if (!this.speaking) {
+        for (const chunk of this.preroll) {
+          this.port.postMessage({ type: "audio", data: chunk, rms, speaking }, [
+            chunk.buffer,
+          ]);
+        }
+        this.preroll = [];
+      }
+      this.port.postMessage({ type: "audio", data: pcm16, rms, speaking }, [
+        pcm16.buffer,
+      ]);
+    } else {
+      this.preroll.push(pcm16);
+      if (this.preroll.length > PREROLL_CHUNKS) this.preroll.shift();
+      this.port.postMessage({ type: "level", rms, speaking });
+    }
+    this.speaking = speaking;
+  }
+
+  rms(pcm16) {
+    let sum = 0;
+    for (let i = 0; i < pcm16.length; i++) {
+      const s = pcm16[i] / 32768;
+      sum += s * s;
+    }
+    return Math.sqrt(sum / pcm16.length);
   }
 
   resample(input) {

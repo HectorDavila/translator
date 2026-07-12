@@ -3,9 +3,15 @@ const translatedTextEl = document.getElementById("translated-text");
 const connectBtn = document.getElementById("connect-btn");
 
 const STREAM_URL = "/stream";
-const MAX_DRIFT_S = 1.5; // speed up slightly if buffered further behind live than this
+// Latency guard tiers: catch up gently, harder if far behind, and jump
+// straight to the live edge when hopelessly behind (it's a live translation —
+// old audio is worthless).
+const DRIFT_SOFT_S = 1.5;
+const DRIFT_HARD_S = 4;
+const DRIFT_JUMP_S = 8;
 
 let ws = null;
+let wsRetryTimer = null;
 let player = null;
 let noSleep = null;
 let userDisconnected = false;
@@ -34,13 +40,21 @@ async function disableNoSleep() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible") return;
+  if (document.visibilityState !== "visible" || userDisconnected) return;
   if (noSleep && !noSleep.isEnabled && player && !player.paused) {
     enableNoSleep();
   }
-  // Audio keeps playing while locked, but nudge it if it stalled in background.
-  if (player && !userDisconnected && player.paused === false && player.readyState < 3) {
+  if (player && player.src && player.paused) {
+    // iOS/Android pause media on interruptions (calls, Siri); resume the live feed.
+    player.play().catch(() => showTapToResume());
+  } else if (player && !player.paused && player.readyState < 3) {
+    // Audio keeps playing while locked, but nudge it if it stalled in background.
     reloadStream();
+  }
+  // Revive the transcript socket if it died while the screen was locked
+  // (only once the user has connected at least once — player exists).
+  if (player && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
+    connectWebSocket();
   }
 });
 
@@ -78,6 +92,15 @@ function createPlayer() {
   });
   player.addEventListener("stalled", reloadStream);
   player.addEventListener("error", reloadStream);
+  player.addEventListener("ended", reloadStream); // server restarted the stream
+}
+
+// Autoplay was blocked (no valid gesture); ask for a tap and reflect it in the button.
+function showTapToResume() {
+  setStatus("Toca Conectar para reanudar el audio", "error");
+  connectBtn.textContent = "Conectar";
+  connectBtn.classList.remove("btn-danger");
+  connectBtn.classList.add("btn-primary");
 }
 
 // Reconnect to the live stream after a network drop / stall.
@@ -88,19 +111,26 @@ function reloadStream() {
     stallTimer = null;
     if (userDisconnected || !player) return;
     player.src = STREAM_URL;
-    player.play().catch(() => {});
+    player.play().catch(() => showTapToResume());
   }, 2000);
 }
 
-// Keep latency low: if the buffer drifts too far behind live, speed up gently.
+// Keep latency low: if the buffer drifts behind live, speed up (pitch is
+// preserved by the browser); if hopelessly behind, seek to the live edge.
 function startLatencyGuard() {
   if (latencyGuard) return;
   latencyGuard = setInterval(() => {
     if (!player || player.paused) return;
     const b = player.buffered;
     if (!b.length) return;
-    const ahead = b.end(b.length - 1) - player.currentTime;
-    player.playbackRate = ahead > MAX_DRIFT_S ? 1.08 : 1.0;
+    const liveEdge = b.end(b.length - 1);
+    const ahead = liveEdge - player.currentTime;
+    if (ahead > DRIFT_JUMP_S) {
+      player.currentTime = liveEdge - 1;
+      player.playbackRate = 1.0;
+    } else {
+      player.playbackRate = ahead > DRIFT_HARD_S ? 1.2 : ahead > DRIFT_SOFT_S ? 1.08 : 1.0;
+    }
   }, 1000);
 }
 
@@ -148,6 +178,10 @@ async function disconnect() {
     clearTimeout(stallTimer);
     stallTimer = null;
   }
+  if (wsRetryTimer) {
+    clearTimeout(wsRetryTimer);
+    wsRetryTimer = null;
+  }
 
   await disableNoSleep();
 
@@ -159,6 +193,14 @@ async function disconnect() {
 }
 
 function connectWebSocket() {
+  if (wsRetryTimer) {
+    clearTimeout(wsRetryTimer);
+    wsRetryTimer = null;
+  }
+  if (userDisconnected) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
   ws = new WebSocket(getWsUrl());
 
   ws.onopen = () => {};
@@ -186,7 +228,7 @@ function connectWebSocket() {
 
   ws.onclose = () => {
     if (userDisconnected) return;
-    setTimeout(connectWebSocket, 3000);
+    wsRetryTimer = setTimeout(connectWebSocket, 3000);
   };
 
   ws.onerror = () => {};

@@ -9,20 +9,8 @@ let ws = null;
 let audioContext = null;
 let workletNode = null;
 let mediaStream = null;
-let analyser = null;
-let animationFrame = null;
-
-// VAD settings
-const VAD_THRESHOLD = 15; // minimum average frequency level to consider "speech"
-const VAD_SILENCE_DELAY_MS = 1500; // keep sending for 1.5s after last speech detected
-let isSpeaking = false;
-let lastSpeechTime = 0;
-
-// Pre-roll: buffer the most recent silent chunks (~100ms each) and flush them
-// when speech starts, so the onset of each utterance isn't clipped.
-const PREROLL_CHUNKS = 3;
-let prerollChunks = [];
-let sending = false;
+let noSleep = null;
+let wantSession = false; // pressed Iniciar and hasn't pressed Detener
 
 function getWsUrl() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -34,12 +22,37 @@ function setStatus(text, type) {
   statusEl.className = `status status-${type}`;
 }
 
+async function enableNoSleep() {
+  if (typeof NoSleep === "undefined") return;
+  if (!noSleep) noSleep = new NoSleep();
+  try {
+    await noSleep.enable();
+  } catch (err) {
+    console.warn("NoSleep.enable() falló:", err);
+  }
+}
+
+async function disableNoSleep() {
+  if (noSleep && noSleep.isEnabled) {
+    try {
+      await noSleep.disable();
+    } catch (_) {}
+  }
+}
+
 function connectWebSocket() {
   ws = new WebSocket(getWsUrl());
 
   ws.onopen = () => {
     setStatus("Conectado al servidor", "idle");
     startBtn.disabled = false;
+    // If we were mid-session when the socket dropped, resume it: the server
+    // keeps the translation alive during a grace period.
+    if (wantSession && mediaStream) {
+      ws.send(JSON.stringify({ type: "start_session" }));
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+    }
   };
 
   ws.onmessage = (event) => {
@@ -54,7 +67,7 @@ function connectWebSocket() {
   };
 
   ws.onclose = () => {
-    setStatus("Desconectado del servidor", "error");
+    setStatus("Reconectando al servidor...", "error");
     startBtn.disabled = true;
     stopBtn.disabled = true;
     setTimeout(connectWebSocket, 3000);
@@ -79,53 +92,33 @@ async function startSession() {
     await audioContext.audioWorklet.addModule("/js/audio-worklet.js");
 
     const source = audioContext.createMediaStreamSource(mediaStream);
-
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-
     workletNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
     source.connect(workletNode);
 
+    // The worklet does VAD + preroll on the audio thread (immune to screen
+    // lock); here we only forward chunks and paint the meter.
     workletNode.port.onmessage = (event) => {
-      if (event.data.type !== "audio") return;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-      const pcm16 = event.data.data;
-
-      if (isSpeaking) {
-        if (!sending) {
-          sending = true;
-          for (const chunk of prerollChunks) ws.send(chunk);
-          prerollChunks = [];
-        }
-        ws.send(pcm16); // binary PCM16 frame
-      } else {
-        sending = false;
-        prerollChunks.push(pcm16);
-        if (prerollChunks.length > PREROLL_CHUNKS) prerollChunks.shift();
+      const msg = event.data;
+      if (msg.type === "audio" && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(msg.data); // binary PCM16 frame
       }
+      updateMeter(msg.rms ?? 0, msg.speaking === true);
     };
 
-    prerollChunks = [];
-    sending = false;
+    wantSession = true;
     ws?.send(JSON.stringify({ type: "start_session" }));
+    await enableNoSleep(); // keep the operator device awake during the service
 
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    startAudioLevelMonitor();
   } catch (err) {
     setStatus(`Error: ${err.message}`, "error");
   }
 }
 
 function stopSession() {
+  wantSession = false;
   ws?.send(JSON.stringify({ type: "stop_session" }));
-
-  if (animationFrame) {
-    cancelAnimationFrame(animationFrame);
-    animationFrame = null;
-  }
 
   workletNode?.disconnect();
   workletNode = null;
@@ -135,52 +128,29 @@ function stopSession() {
 
   audioContext?.close();
   audioContext = null;
-  analyser = null;
 
-  levelEl.style.width = "0%";
-  isSpeaking = false;
-  updateVadIndicator();
+  disableNoSleep();
+
+  updateMeter(0, false);
   startBtn.disabled = false;
   stopBtn.disabled = true;
   setStatus("Sesión detenida", "idle");
 }
 
-function startAudioLevelMonitor() {
-  if (!analyser) return;
-
-  const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-  function updateLevel() {
-    analyser.getByteFrequencyData(dataArray);
-    const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-    const level = Math.min(100, (average / 128) * 100);
-    levelEl.style.width = `${level}%`;
-
-    // VAD logic
-    const now = Date.now();
-    if (average > VAD_THRESHOLD) {
-      lastSpeechTime = now;
-      if (!isSpeaking) {
-        isSpeaking = true;
-        updateVadIndicator();
-      }
-    } else if (isSpeaking && now - lastSpeechTime > VAD_SILENCE_DELAY_MS) {
-      isSpeaking = false;
-      updateVadIndicator();
-    }
-
-    animationFrame = requestAnimationFrame(updateLevel);
-  }
-
-  updateLevel();
-}
-
-function updateVadIndicator() {
+// Meter updates arrive every ~100ms from the worklet — no rAF needed.
+function updateMeter(rms, speaking) {
+  levelEl.style.width = `${Math.min(100, Math.round(rms * 700))}%`;
   if (vadIndicator) {
-    vadIndicator.textContent = isSpeaking ? "Enviando audio" : "En silencio (pausado)";
-    vadIndicator.className = isSpeaking ? "vad-status vad-active" : "vad-status vad-silent";
+    vadIndicator.textContent = speaking ? "Enviando audio" : "En silencio (pausado)";
+    vadIndicator.className = speaking ? "vad-status vad-active" : "vad-status vad-silent";
   }
 }
+
+// Re-acquire the wake lock when returning to the foreground mid-session.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (wantSession && noSleep && !noSleep.isEnabled) enableNoSleep();
+});
 
 setInterval(async () => {
   try {

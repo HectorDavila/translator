@@ -5,10 +5,21 @@ import ffmpegPath from "ffmpeg-static";
 const SAMPLE_RATE = 24000;
 const FRAME_MS = 20;
 const BYTES_PER_FRAME = (SAMPLE_RATE * 2 * FRAME_MS) / 1000; // 960 (PCM16 mono)
-const MAX_QUEUE_BYTES = SAMPLE_RATE * 2 * 1.5; // ~1.5s of audio backlog cap
+const MP3_BITRATE_KBPS = 64;
+// OpenAI delivers each translated utterance as a burst (faster than realtime),
+// so the queue legitimately holds several seconds mid-utterance. The cap is a
+// safety net only — dropping from it cuts words, so it must never be hit in
+// normal operation.
+const MAX_QUEUE_BYTES = SAMPLE_RATE * 2 * 60;
+// When the backlog crosses HIGH, encode at 2x realtime until it drains below
+// LOW. Nothing is dropped: clients buffer the burst and their latency guard
+// trims it with a slightly faster playbackRate.
+const CATCHUP_HIGH_BYTES = SAMPLE_RATE * 2 * 2.5;
+const CATCHUP_LOW_BYTES = SAMPLE_RATE * 2 * 0.75;
 const MAX_CATCHUP_FRAMES = 50; // bound work if the event loop stalls
-const PRIME_BYTES = 2000; // ~0.3s of recent MP3 to start new clients fast
-const MAX_HTTP_BACKLOG = 256 * 1024; // drop frames for clients this far behind
+const PRIME_BYTES = Math.round(((MP3_BITRATE_KBPS * 1000) / 8) * 0.35); // ~0.35s of recent MP3 to start new clients fast
+const MAX_HTTP_BACKLOG = 256 * 1024; // kick clients this far behind; they reconnect at the live edge
+const RESTART_DELAY_MS = 1000;
 
 // Continuously encodes the translated audio to a single MP3 stream and fans it
 // out to HTTP listeners. One ffmpeg process for everyone; the pacer keeps a
@@ -24,39 +35,20 @@ export class AudioStreamer {
   private framesProduced = 0;
   private recentMp3: Buffer[] = [];
   private recentBytes = 0;
+  private catchingUp = false;
+  private stopping = false;
+  private restartTimer: NodeJS.Timeout | null = null;
 
   start(): void {
-    if (this.ffmpeg) return;
-    if (!ffmpegPath) {
-      console.error("[Stream] ffmpeg binary not found");
-      return;
-    }
-
-    this.ffmpeg = spawn(ffmpegPath, [
-      "-hide_banner", "-loglevel", "error",
-      "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
-      "-c:a", "libmp3lame", "-b:a", "48k", "-flush_packets", "1",
-      "-f", "mp3", "pipe:1",
-    ]);
-
-    this.ffmpeg.stdout?.on("data", (chunk: Buffer) => this.onMp3(chunk));
-    this.ffmpeg.stderr?.on("data", (d: Buffer) =>
-      console.error(`[Stream] ffmpeg: ${d.toString().trim()}`)
-    );
-    this.ffmpeg.on("error", (err) =>
-      console.error(`[Stream] ffmpeg spawn error: ${err.message}`)
-    );
-    this.ffmpeg.on("close", () => {
-      this.ffmpeg = null;
-    });
-
-    this.startedAt = Date.now();
-    this.framesProduced = 0;
-    this.pacer = setInterval(() => this.tick(), FRAME_MS);
-    console.log("[Stream] Encoder started");
+    this.stopping = false;
+    this.spawnEncoder();
+    if (!this.pacer) this.pacer = setInterval(() => this.tick(), FRAME_MS);
   }
 
   stop(): void {
+    this.stopping = true;
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
     if (this.pacer) clearInterval(this.pacer);
     this.pacer = null;
     if (this.ffmpeg) {
@@ -76,10 +68,10 @@ export class AudioStreamer {
   pushPcm(pcm: Buffer): void {
     this.pcmQueue.push(pcm);
     this.queuedBytes += pcm.length;
-    // Bound the backlog so latency can't grow without limit if OpenAI bursts.
     while (this.queuedBytes > MAX_QUEUE_BYTES && this.pcmQueue.length > 1) {
       const dropped = this.pcmQueue.shift()!;
       this.queuedBytes -= dropped.length;
+      console.error("[Stream] PCM queue overflow — dropping audio (should not happen)");
     }
   }
 
@@ -88,27 +80,104 @@ export class AudioStreamer {
       "Content-Type": "audio/mpeg",
       "Cache-Control": "no-cache, no-store",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no", // keep reverse proxies from buffering the live stream
     });
     res.flushHeaders?.();
+    res.socket?.setNoDelay(true);
     for (const chunk of this.recentMp3) res.write(chunk);
     this.clients.add(res);
-    res.on("close", () => this.clients.delete(res));
+    const drop = () => this.clients.delete(res);
+    res.on("close", drop);
+    res.on("error", drop);
   }
 
   getClientCount(): number {
     return this.clients.size;
   }
 
+  private spawnEncoder(): void {
+    if (this.ffmpeg) return;
+    if (!ffmpegPath) {
+      console.error("[Stream] ffmpeg binary not found");
+      return;
+    }
+
+    this.ffmpeg = spawn(ffmpegPath, [
+      "-hide_banner", "-loglevel", "error",
+      // Skip input probing/buffering: cuts time-to-first-byte from ~2.1s to
+      // ~0.1s (measured), which is the recovery gap after an encoder restart.
+      "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer",
+      "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1", "-i", "pipe:0",
+      "-c:a", "libmp3lame", "-b:a", `${MP3_BITRATE_KBPS}k`,
+      // No bit reservoir: every frame is self-contained, so clients joining
+      // mid-stream (or resyncing after a drop) decode cleanly.
+      "-reservoir", "0",
+      // No Xing/ID3 headers — meaningless for an endless live stream.
+      "-write_xing", "0", "-id3v2_version", "0",
+      "-flush_packets", "1",
+      "-f", "mp3", "pipe:1",
+    ]);
+
+    // EPIPE on stdin (encoder died mid-write) must not crash the server.
+    this.ffmpeg.stdin?.on("error", (err) =>
+      console.error(`[Stream] ffmpeg stdin: ${err.message}`)
+    );
+    this.ffmpeg.stdout?.on("data", (chunk: Buffer) => this.onMp3(chunk));
+    this.ffmpeg.stderr?.on("data", (d: Buffer) =>
+      console.error(`[Stream] ffmpeg: ${d.toString().trim()}`)
+    );
+    this.ffmpeg.on("error", (err) => {
+      console.error(`[Stream] ffmpeg spawn error: ${err.message}`);
+      if (!this.ffmpeg?.pid) {
+        this.ffmpeg = null;
+        this.scheduleRestart();
+      }
+    });
+    this.ffmpeg.on("close", (code) => {
+      this.ffmpeg = null;
+      if (this.stopping) return;
+      console.error(`[Stream] ffmpeg exited (code ${code}) — restarting encoder`);
+      this.scheduleRestart();
+    });
+
+    this.startedAt = Date.now();
+    this.framesProduced = 0;
+    console.log("[Stream] Encoder started");
+  }
+
+  // Keep connected clients: MP3 is self-syncing, so once the new encoder is
+  // producing, the same responses simply carry on.
+  private scheduleRestart(): void {
+    if (this.stopping || this.restartTimer) return;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.spawnEncoder();
+    }, RESTART_DELAY_MS);
+  }
+
   private tick(): void {
-    if (!this.ffmpeg) return;
+    if (!this.ffmpeg || !this.ffmpeg.stdin?.writable) return;
     const targetFrames = Math.floor((Date.now() - this.startedAt) / FRAME_MS);
     let budget = MAX_CATCHUP_FRAMES;
     while (this.framesProduced < targetFrames && budget-- > 0) {
-      this.ffmpeg.stdin?.write(this.dequeueFrame());
+      this.ffmpeg.stdin.write(this.dequeueFrame());
       this.framesProduced++;
     }
     // If we fell far behind (stall), skip ahead instead of replaying old time.
     if (this.framesProduced < targetFrames) this.framesProduced = targetFrames;
+
+    if (this.catchingUp) {
+      if (this.queuedBytes <= CATCHUP_LOW_BYTES) this.catchingUp = false;
+    } else if (this.queuedBytes >= CATCHUP_HIGH_BYTES) {
+      this.catchingUp = true;
+      console.log(
+        `[Stream] Backlog ${(this.queuedBytes / (SAMPLE_RATE * 2)).toFixed(1)}s — encoding at 2x to catch up`
+      );
+    }
+    // One extra (uncounted) frame per tick = 2x realtime while backlogged.
+    if (this.catchingUp && this.queuedBytes >= BYTES_PER_FRAME) {
+      this.ffmpeg.stdin.write(this.dequeueFrame());
+    }
   }
 
   // Assemble exactly one frame of PCM, padding with silence when the queue runs dry.
@@ -140,7 +209,12 @@ export class AudioStreamer {
       this.recentBytes -= this.recentMp3.shift()!.length;
     }
     for (const res of this.clients) {
-      if (res.writableLength > MAX_HTTP_BACKLOG) continue; // drop for slow client
+      if (res.writableLength > MAX_HTTP_BACKLOG) {
+        // Hopelessly behind (~30s+): kill the socket so the client's stall
+        // handler reconnects at the live edge instead of decoding a gap.
+        res.destroy();
+        continue;
+      }
       res.write(chunk);
     }
   }

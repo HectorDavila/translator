@@ -4,8 +4,10 @@ import type { OpenAIEvent } from "./types.js";
 const OPENAI_REALTIME_URL =
   "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate";
 
-const MAX_RECONNECT_ATTEMPTS = 5;
+// Retry for as long as the session is meant to be live: giving up mid-sermon
+// strands every listener. Backoff is capped so recovery stays fast.
 const BASE_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30000;
 
 export class OpenAITranslator {
   private ws: WebSocket | null = null;
@@ -28,6 +30,13 @@ export class OpenAITranslator {
 
   connect(): void {
     this.shouldReconnect = true;
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN ||
+        this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return; // already connected/connecting (e.g. restart during backoff)
+    }
     this.createConnection();
   }
 
@@ -172,17 +181,14 @@ export class OpenAITranslator {
 
   private attemptReconnect(): void {
     if (!this.shouldReconnect) return;
-    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      console.error("[OpenAI] Max reconnection attempts reached");
-      this.onDisconnectedCallback?.("Max reconnection attempts reached");
-      return;
-    }
 
     this.reconnectAttempts++;
-    const delay =
-      BASE_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
+    const delay = Math.min(
+      BASE_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
+      MAX_RECONNECT_DELAY_MS
+    );
     console.log(
-      `[OpenAI] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`
+      `[OpenAI] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`
     );
 
     setTimeout(() => {

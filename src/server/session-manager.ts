@@ -4,12 +4,17 @@ import { Broadcaster } from "./broadcast.js";
 import type { AudioStreamer } from "./audio-stream.js";
 import type { SessionState, OperatorMessage } from "./types.js";
 
+// Keep translating this long after the operator's socket drops, so a network
+// blip on the operator's device doesn't cut the sermon for every listener.
+const OPERATOR_GRACE_MS = 60_000;
+
 export class SessionManager {
   private state: SessionState = "idle";
   private translator: OpenAITranslator;
   private broadcaster: Broadcaster;
   private audioStreamer: AudioStreamer;
   private operatorWs: WebSocket | null = null;
+  private operatorGraceTimer: NodeJS.Timeout | null = null;
 
   constructor(
     apiKey: string,
@@ -51,7 +56,14 @@ export class SessionManager {
     }
 
     this.operatorWs = ws;
-    console.log("[Session] Operator connected");
+    if (this.operatorGraceTimer) {
+      // Keep the grace timer running: only a fresh start_session confirms the
+      // session; otherwise a page that never starts would leak it forever.
+      console.log("[Session] Operator reconnected — awaiting start_session");
+    } else {
+      console.log("[Session] Operator connected");
+    }
+    ws.send(JSON.stringify({ type: "status", state: this.state }));
 
     ws.on("message", (data, isBinary) => {
       // Binary frames are raw PCM16 audio; text frames are JSON control messages.
@@ -73,15 +85,14 @@ export class SessionManager {
     });
 
     ws.on("close", () => {
-      console.log("[Session] Operator disconnected");
+      if (this.operatorWs !== ws) return;
       this.operatorWs = null;
-      this.stopSession();
+      console.log("[Session] Operator disconnected");
+      this.scheduleGraceStop();
     });
 
     ws.on("error", (err) => {
       console.error("[Session] Operator WebSocket error:", err.message);
-      this.operatorWs = null;
-      this.stopSession();
     });
   }
 
@@ -117,6 +128,11 @@ export class SessionManager {
   }
 
   private startSession(): void {
+    if (this.operatorGraceTimer) {
+      clearTimeout(this.operatorGraceTimer);
+      this.operatorGraceTimer = null;
+      console.log("[Session] Session resumed within grace period");
+    }
     if (this.state === "active") return;
 
     console.log("[Session] Starting translation session");
@@ -124,11 +140,26 @@ export class SessionManager {
   }
 
   private stopSession(): void {
+    if (this.operatorGraceTimer) {
+      clearTimeout(this.operatorGraceTimer);
+      this.operatorGraceTimer = null;
+    }
     if (this.state === "idle") return;
 
     console.log("[Session] Stopping translation session");
     this.translator.disconnect();
     this.setState("idle");
+  }
+
+  private scheduleGraceStop(): void {
+    if (this.state === "idle" || this.operatorGraceTimer) return;
+    console.log(
+      `[Session] Keeping session alive ${OPERATOR_GRACE_MS / 1000}s awaiting operator reconnect`
+    );
+    this.operatorGraceTimer = setTimeout(() => {
+      this.operatorGraceTimer = null;
+      this.stopSession();
+    }, OPERATOR_GRACE_MS);
   }
 
   private setState(newState: SessionState): void {

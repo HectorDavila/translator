@@ -7,11 +7,10 @@ Real-time English-to-Spanish translation app for a bilingual church (Access GT).
 ## Architecture
 
 ```
-Operator (Mac laptop mic) → WebSocket → Backend (Node.js) → OpenAI Realtime API
-                                                          ↓
-                                              Translated audio + transcripts
-                                                          ↓
-                                              WebSocket broadcast → Listener phones (PWA)
+Operator mic → WS (binary PCM16) → Backend (Node.js) → OpenAI Realtime API
+                                                          ↓ translated PCM16
+                                       ffmpeg (64kbps MP3) ──→ GET /stream ──→ <audio> on phones (plays locked)
+                                       transcripts + status ──────→ WS ──────→ phones (subtitles)
 ```
 
 ## Current State (end of 2026-05-16 session)
@@ -34,6 +33,38 @@ Operator (Mac laptop mic) → WebSocket → Backend (Node.js) → OpenAI Realtim
    - `gpt-realtime-translate` only accepts `language` under `audio.output` — no voice control.
    - Decision: accept the limitation for now. Code keeps only `language` in the session config.
    - If voice consistency becomes critical later: switch to hybrid (translate model for transcript + separate TTS) or to `gpt-realtime-2` voice agent with translation instructions.
+
+## Changes made in session 2026-07-12 (fluidity / lock-screen / recovery)
+
+Focus: no dropped words, faster delivery, survive screen lock on both roles.
+
+### Server
+- **`audio-stream.ts` — stop dropping translated audio**: the PCM queue cap was 1.5s, but OpenAI delivers each translated utterance as a burst (faster than realtime), so anything longer than 1.5s lost its start (main cause of "entrecortado"). Cap is now a 60s safety net, and when backlog exceeds 2.5s the encoder runs at 2x realtime until it drains below 0.75s — nothing dropped; clients absorb the burst and trim it via playbackRate.
+- **Encoder self-healing**: ffmpeg stdin `error` handler (EPIPE no longer can crash the server) + auto-respawn 1s after unexpected exit, keeping connected clients (MP3 self-syncs).
+- **Low-latency ffmpeg flags**: `-probesize 32 -analyzeduration 0 -fflags nobuffer` cut encoder time-to-first-byte from ~2.1s to ~0.1s (measured); `-reservoir 0` makes every MP3 frame self-contained so mid-stream joins decode cleanly; `-write_xing 0 -id3v2_version 0`; bitrate 48k → 64k to offset the reservoir loss.
+- **/stream hardening**: `X-Accel-Buffering: no` (reverse proxies), `setNoDelay`, `error` handler per client; clients >256KB behind get destroyed so they auto-reconnect at the live edge instead of decoding a corrupt gap.
+- **`openai-translator.ts`**: reconnects forever while the session is live (was: gave up after 5 attempts ≈ 31s), backoff capped at 30s; guard against duplicate sockets.
+- **`session-manager.ts` — operator grace period**: operator socket drop no longer kills the session instantly; it survives 60s awaiting reconnect. Only `start_session` confirms resumption (a fresh page that never starts lets it stop). Server sends current status to the operator on connect.
+
+### Operator client
+- **VAD moved into the AudioWorklet** (audio thread): the old `requestAnimationFrame` VAD froze when the screen locked / tab backgrounded, silently stopping the broadcast. Now RMS threshold + 1.5s hangover + 300ms preroll all run on the audio thread; main thread only forwards chunks and paints the meter (no more analyser/rAF).
+- **NoSleep on operator page** — device stays awake during the session; wake lock re-acquired on `visibilitychange`.
+- **Auto-resume**: if the operator WS drops and reconnects while capturing, it re-sends `start_session` (pairs with the server grace period).
+
+### Listener client
+- `ended` event reloads the stream (server restart no longer strands players).
+- On return to foreground: resumes a paused player (call/Siri interruptions), revives a dead transcript WS, and keeps the stalled-stream nudge.
+- Tiered latency guard: 1.08x past 1.5s behind, 1.2x past 4s, jump to live edge past 8s.
+- If autoplay is blocked on resume, status + button now ask for a tap ("Toca Conectar…").
+- WS reconnect timer is tracked/cleared (no duplicate sockets, no reconnect after manual disconnect).
+
+### All pages
+- Google Fonts stylesheet loads async (`media="print"` swap) — first paint no longer blocks on fonts over slow church Wi-Fi.
+
+### Verified
+- Streamer harness: 10s burst → fully delivered at 2x, nothing dropped; ffmpeg SIGKILL → auto-restart, same client keeps receiving.
+- Integration: operator WS terminate → session survives → reconnect + `start_session` resumes → clean stop (real OpenAI session).
+- Mid-stream MP3 capture decodes cleanly; `/stream` headers + 64kbps rate confirmed.
 
 ## Changes made in this session (2026-05-16)
 
