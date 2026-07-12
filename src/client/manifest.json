@@ -1,7 +1,7 @@
 {
   "name": "Church Translator",
   "short_name": "Translator",
-  "description": "Traducción en tiempo real para servicios de iglesia",
+  "description": "Real-time translation for church services",
   "start_url": "/listener.html",
   "display": "standalone",
   "background_color": "#0F0F0F",

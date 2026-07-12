@@ -30,8 +30,10 @@ class ListenerApp {
     this.labelEl = labelEl;
     this.userDisconnected = false;
     this.hasConnectedOnce = false;
-    this.lang = "es";
-    this.t = messagesFor("es");
+    // Must match the static text in listener.html; applyLanguage() re-renders
+    // as soon as the real broadcast language is known.
+    this.lang = "en";
+    this.t = messagesFor("en");
     this.statusKey = "none";
     this.buttonState = "connect";
 

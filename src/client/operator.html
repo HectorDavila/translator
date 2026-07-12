@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Operador — Church Translator</title>
+  <title>Operator — Church Translator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;900&display=swap" media="print" onload="this.media='all'">
@@ -13,12 +13,12 @@
 </head>
 <body>
   <div class="container">
-    <h1>Panel de Operador</h1>
+    <h1>Operator Panel</h1>
 
-    <div id="status" class="status status-idle">Conectando...</div>
+    <div id="status" class="status status-idle">Connecting...</div>
 
     <div class="card">
-      <label for="language-select">Idioma de la transmisión</label>
+      <label for="language-select">Broadcast language</label>
       <select id="language-select" class="select">
         <option value="es">Español</option>
         <option value="en">English</option>
@@ -34,24 +34,24 @@
         <option value="id">Bahasa Indonesia</option>
         <option value="vi">Tiếng Việt</option>
       </select>
-      <p class="hint">El idioma de la prédica se detecta automáticamente.</p>
+      <p class="hint">The sermon's language is detected automatically.</p>
     </div>
 
     <div class="card">
-      <label>Nivel de audio</label>
+      <label>Audio level</label>
       <div class="audio-level-container">
         <div id="audio-level" class="audio-level-bar"></div>
       </div>
-      <div id="vad-indicator" class="vad-status vad-silent">En silencio (pausado)</div>
+      <div id="vad-indicator" class="vad-status vad-silent">Silent (paused)</div>
     </div>
 
     <div class="btn-group">
-      <button id="start-btn" class="btn-success" disabled>Iniciar</button>
-      <button id="stop-btn" class="btn-danger" disabled>Detener</button>
+      <button id="start-btn" class="btn-success" disabled>Start</button>
+      <button id="stop-btn" class="btn-danger" disabled>Stop</button>
     </div>
 
     <div class="info-row">
-      <span>Personas escuchando:</span>
+      <span>People listening:</span>
       <span id="listener-count">0</span>
     </div>
   </div>

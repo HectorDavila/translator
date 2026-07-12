@@ -18,7 +18,7 @@ class OperatorApp {
     this.listenerCountEl = listenerCountEl;
     this.vadIndicator = vadIndicator;
     this.languageSelect = languageSelect;
-    this.wantSession = false; // pressed Iniciar and hasn't pressed Detener
+    this.wantSession = false; // pressed Start and hasn't pressed Stop
     this.continuous = false; // VAD mode, resolved from /api/config on start
     this.configPromise = this.fetchConfig();
     this.initLanguage();
@@ -28,7 +28,7 @@ class OperatorApp {
     this.socket = new ReconnectingSocket(this.wsUrl());
     this.socket.onOpen = () => this.handleOpen();
     this.socket.onClose = () => this.handleClose();
-    this.socket.onError = () => this.setStatus("Error de conexión", "error");
+    this.socket.onError = () => this.setStatus("Connection error", "error");
     this.socket.onMessage = (msg) => this.handleMessage(msg);
 
     this.mic = new MicCapture();
@@ -44,7 +44,7 @@ class OperatorApp {
 
     setInterval(() => this.pollListenerCount(), HEALTH_POLL_MS);
 
-    this.setStatus("Conectando...", "idle");
+    this.setStatus("Connecting...", "idle");
     this.socket.connect();
   }
 
@@ -122,11 +122,11 @@ class OperatorApp {
     this.updateMeter(0, false);
     this.startBtn.disabled = false;
     this.stopBtn.disabled = true;
-    this.setStatus("Sesión detenida", "idle");
+    this.setStatus("Session stopped", "idle");
   }
 
   handleOpen() {
-    this.setStatus("Conectado al servidor", "idle");
+    this.setStatus("Connected to server", "idle");
     this.startBtn.disabled = false;
     // Mid-session reconnect: resume before the server's grace period ends.
     if (this.wantSession && this.mic.active) {
@@ -144,7 +144,7 @@ class OperatorApp {
   }
 
   handleClose() {
-    this.setStatus("Reconectando al servidor...", "error");
+    this.setStatus("Reconnecting to server...", "error");
     this.startBtn.disabled = true;
     this.stopBtn.disabled = true;
   }
@@ -152,9 +152,9 @@ class OperatorApp {
   handleMessage(msg) {
     if (msg.type !== "status") return;
     if (msg.state === "active") {
-      this.setStatus("Traduciendo en vivo", "active");
+      this.setStatus("Translating live", "active");
     } else if (msg.state === "error") {
-      this.setStatus("Error en la traducción", "error");
+      this.setStatus("Translation error", "error");
     }
   }
 
@@ -164,9 +164,9 @@ class OperatorApp {
     if (!this.vadIndicator) return;
     if (this.continuous) {
       // Everything streams in continuous mode; only reflect speech detection.
-      this.vadIndicator.textContent = speaking ? "Enviando audio (continuo)" : "Enviando silencio (continuo)";
+      this.vadIndicator.textContent = speaking ? "Sending audio (continuous)" : "Sending silence (continuous)";
     } else {
-      this.vadIndicator.textContent = speaking ? "Enviando audio" : "En silencio (pausado)";
+      this.vadIndicator.textContent = speaking ? "Sending audio" : "Silent (paused)";
     }
     this.vadIndicator.className = speaking ? "vad-status vad-active" : "vad-status vad-silent";
   }
