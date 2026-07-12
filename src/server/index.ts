@@ -1,10 +1,10 @@
-import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { networkInterfaces } from "os";
+import { loadConfig } from "./config.js";
 import { SessionManager } from "./session-manager.js";
 import { AudioStreamer } from "./audio-stream.js";
 
@@ -23,14 +23,7 @@ function getLanIp(): string | null {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PORT = parseInt(process.env.PORT || "3000", 10);
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const TARGET_LANGUAGE = process.env.TARGET_LANGUAGE || "es";
-
-if (!OPENAI_API_KEY) {
-  console.error("OPENAI_API_KEY environment variable is required");
-  process.exit(1);
-}
+const config = loadConfig();
 
 const app = express();
 const server = createServer(app);
@@ -47,15 +40,14 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/api/listener-url", (req, res) => {
-  const publicHost = process.env.PUBLIC_HOST;
   const protocol = (req.headers["x-forwarded-proto"] as string) || req.protocol;
-  if (publicHost) {
-    res.json({ url: `${protocol}://${publicHost}/listener.html`, source: "env" });
+  if (config.publicHost) {
+    res.json({ url: `${protocol}://${config.publicHost}/listener.html`, source: "env" });
     return;
   }
   const lanIp = getLanIp();
   if (lanIp) {
-    res.json({ url: `http://${lanIp}:${PORT}/listener.html`, source: "lan" });
+    res.json({ url: `http://${lanIp}:${config.port}/listener.html`, source: "lan" });
     return;
   }
   res.json({ url: `${protocol}://${req.get("host")}/listener.html`, source: "fallback" });
@@ -70,8 +62,8 @@ app.get("/stream", (_req, res) => {
 });
 
 const sessionManager = new SessionManager(
-  OPENAI_API_KEY,
-  TARGET_LANGUAGE,
+  config.openaiApiKey,
+  config.targetLanguage,
   audioStreamer
 );
 
@@ -109,9 +101,9 @@ const heartbeat = setInterval(() => {
 
 wss.on("close", () => clearInterval(heartbeat));
 
-server.listen(PORT, () => {
-  console.log(`[Server] Running on http://localhost:${PORT}`);
-  console.log(`[Server] Target language: ${TARGET_LANGUAGE}`);
-  console.log(`[Server] Operator: http://localhost:${PORT}/operator.html`);
-  console.log(`[Server] Listener: http://localhost:${PORT}/listener.html`);
+server.listen(config.port, () => {
+  console.log(`[Server] Running on http://localhost:${config.port}`);
+  console.log(`[Server] Target language: ${config.targetLanguage}`);
+  console.log(`[Server] Operator: http://localhost:${config.port}/operator.html`);
+  console.log(`[Server] Listener: http://localhost:${config.port}/listener.html`);
 });

@@ -1,4 +1,4 @@
-const CACHE_NAME = "church-translator-v3";
+const CACHE_NAME = "church-translator-v4";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
@@ -8,6 +8,11 @@ const STATIC_ASSETS = [
   "/js/listener.js",
   "/js/operator.js",
   "/js/audio-worklet.js",
+  "/js/live-audio.js",
+  "/js/mic-capture.js",
+  "/js/ws-client.js",
+  "/js/wake-lock.js",
+  "/js/nosleep.min.js",
 ];
 
 self.addEventListener("install", (event) => {

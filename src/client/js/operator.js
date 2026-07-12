@@ -1,169 +1,130 @@
-const startBtn = document.getElementById("start-btn");
-const stopBtn = document.getElementById("stop-btn");
-const statusEl = document.getElementById("status");
-const levelEl = document.getElementById("audio-level");
-const listenerCountEl = document.getElementById("listener-count");
-const vadIndicator = document.getElementById("vad-indicator");
+import { MicCapture } from "./mic-capture.js";
+import { ReconnectingSocket } from "./ws-client.js";
+import { ScreenWakeLock } from "./wake-lock.js";
 
-let ws = null;
-let audioContext = null;
-let workletNode = null;
-let mediaStream = null;
-let noSleep = null;
-let wantSession = false; // pressed Iniciar and hasn't pressed Detener
+const HEALTH_POLL_MS = 5000;
+const METER_GAIN = 700; // rms ≈ 0.14 paints the level bar full
 
-function getWsUrl() {
-  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${location.host}/ws/operator`;
-}
+// Operator page: streams mic audio (already VAD-gated by the worklet) to the
+// server and controls the translation session. Survives its own network
+// blips: the server keeps the session in a grace period and we re-send
+// start_session on reconnect.
+class OperatorApp {
+  constructor({ startBtn, stopBtn, statusEl, levelEl, listenerCountEl, vadIndicator }) {
+    this.startBtn = startBtn;
+    this.stopBtn = stopBtn;
+    this.statusEl = statusEl;
+    this.levelEl = levelEl;
+    this.listenerCountEl = listenerCountEl;
+    this.vadIndicator = vadIndicator;
+    this.wantSession = false; // pressed Iniciar and hasn't pressed Detener
 
-function setStatus(text, type) {
-  statusEl.textContent = text;
-  statusEl.className = `status status-${type}`;
-}
+    this.wakeLock = new ScreenWakeLock();
 
-async function enableNoSleep() {
-  if (typeof NoSleep === "undefined") return;
-  if (!noSleep) noSleep = new NoSleep();
-  try {
-    await noSleep.enable();
-  } catch (err) {
-    console.warn("NoSleep.enable() falló:", err);
-  }
-}
+    this.socket = new ReconnectingSocket(this.wsUrl());
+    this.socket.onOpen = () => this.handleOpen();
+    this.socket.onClose = () => this.handleClose();
+    this.socket.onError = () => this.setStatus("Error de conexión", "error");
+    this.socket.onMessage = (msg) => this.handleMessage(msg);
 
-async function disableNoSleep() {
-  if (noSleep && noSleep.isEnabled) {
-    try {
-      await noSleep.disable();
-    } catch (_) {}
-  }
-}
+    this.mic = new MicCapture();
+    this.mic.onChunk = (pcm16) => this.socket.send(pcm16); // binary PCM16 frame
+    this.mic.onLevel = ({ rms, speaking }) => this.updateMeter(rms, speaking);
 
-function connectWebSocket() {
-  ws = new WebSocket(getWsUrl());
-
-  ws.onopen = () => {
-    setStatus("Conectado al servidor", "idle");
-    startBtn.disabled = false;
-    // If we were mid-session when the socket dropped, resume it: the server
-    // keeps the translation alive during a grace period.
-    if (wantSession && mediaStream) {
-      ws.send(JSON.stringify({ type: "start_session" }));
-      startBtn.disabled = true;
-      stopBtn.disabled = false;
-    }
-  };
-
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
-    if (msg.type === "status") {
-      if (msg.state === "active") {
-        setStatus("Traduciendo en vivo", "active");
-      } else if (msg.state === "error") {
-        setStatus("Error en la traducción", "error");
-      }
-    }
-  };
-
-  ws.onclose = () => {
-    setStatus("Reconectando al servidor...", "error");
-    startBtn.disabled = true;
-    stopBtn.disabled = true;
-    setTimeout(connectWebSocket, 3000);
-  };
-
-  ws.onerror = () => {
-    setStatus("Error de conexión", "error");
-  };
-}
-
-async function startSession() {
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        sampleRate: 48000,
-      },
+    this.startBtn.addEventListener("click", () => this.startSession());
+    this.stopBtn.addEventListener("click", () => this.stopSession());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      if (this.wantSession && !this.wakeLock.active) this.wakeLock.enable();
     });
 
-    audioContext = new AudioContext({ sampleRate: 48000 });
-    await audioContext.audioWorklet.addModule("/js/audio-worklet.js");
+    setInterval(() => this.pollListenerCount(), HEALTH_POLL_MS);
 
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    workletNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
-    source.connect(workletNode);
+    this.setStatus("Conectando...", "idle");
+    this.socket.connect();
+  }
 
-    // The worklet does VAD + preroll on the audio thread (immune to screen
-    // lock); here we only forward chunks and paint the meter.
-    workletNode.port.onmessage = (event) => {
-      const msg = event.data;
-      if (msg.type === "audio" && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(msg.data); // binary PCM16 frame
-      }
-      updateMeter(msg.rms ?? 0, msg.speaking === true);
-    };
+  wsUrl() {
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${location.host}/ws/operator`;
+  }
 
-    wantSession = true;
-    ws?.send(JSON.stringify({ type: "start_session" }));
-    await enableNoSleep(); // keep the operator device awake during the service
+  async startSession() {
+    try {
+      await this.mic.start();
+    } catch (err) {
+      this.setStatus(`Error: ${err.message}`, "error");
+      return;
+    }
+    this.wantSession = true;
+    this.socket.sendJson({ type: "start_session" });
+    await this.wakeLock.enable(); // keep the operator device awake
+    this.startBtn.disabled = true;
+    this.stopBtn.disabled = false;
+  }
 
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-  } catch (err) {
-    setStatus(`Error: ${err.message}`, "error");
+  stopSession() {
+    this.wantSession = false;
+    this.socket.sendJson({ type: "stop_session" });
+    this.mic.stop();
+    this.wakeLock.disable();
+    this.updateMeter(0, false);
+    this.startBtn.disabled = false;
+    this.stopBtn.disabled = true;
+    this.setStatus("Sesión detenida", "idle");
+  }
+
+  handleOpen() {
+    this.setStatus("Conectado al servidor", "idle");
+    this.startBtn.disabled = false;
+    // Mid-session reconnect: resume before the server's grace period ends.
+    if (this.wantSession && this.mic.active) {
+      this.socket.sendJson({ type: "start_session" });
+      this.startBtn.disabled = true;
+      this.stopBtn.disabled = false;
+    }
+  }
+
+  handleClose() {
+    this.setStatus("Reconectando al servidor...", "error");
+    this.startBtn.disabled = true;
+    this.stopBtn.disabled = true;
+  }
+
+  handleMessage(msg) {
+    if (msg.type !== "status") return;
+    if (msg.state === "active") {
+      this.setStatus("Traduciendo en vivo", "active");
+    } else if (msg.state === "error") {
+      this.setStatus("Error en la traducción", "error");
+    }
+  }
+
+  // Driven by worklet messages every ~100ms — works with the screen locked.
+  updateMeter(rms, speaking) {
+    this.levelEl.style.width = `${Math.min(100, Math.round(rms * METER_GAIN))}%`;
+    if (this.vadIndicator) {
+      this.vadIndicator.textContent = speaking ? "Enviando audio" : "En silencio (pausado)";
+      this.vadIndicator.className = speaking ? "vad-status vad-active" : "vad-status vad-silent";
+    }
+  }
+
+  async pollListenerCount() {
+    try {
+      const res = await fetch("/health");
+      const data = await res.json();
+      this.listenerCountEl.textContent = data.listeners.toString();
+    } catch {
+      // transient — next poll will retry
+    }
   }
 }
 
-function stopSession() {
-  wantSession = false;
-  ws?.send(JSON.stringify({ type: "stop_session" }));
-
-  workletNode?.disconnect();
-  workletNode = null;
-
-  mediaStream?.getTracks().forEach((track) => track.stop());
-  mediaStream = null;
-
-  audioContext?.close();
-  audioContext = null;
-
-  disableNoSleep();
-
-  updateMeter(0, false);
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  setStatus("Sesión detenida", "idle");
-}
-
-// Meter updates arrive every ~100ms from the worklet — no rAF needed.
-function updateMeter(rms, speaking) {
-  levelEl.style.width = `${Math.min(100, Math.round(rms * 700))}%`;
-  if (vadIndicator) {
-    vadIndicator.textContent = speaking ? "Enviando audio" : "En silencio (pausado)";
-    vadIndicator.className = speaking ? "vad-status vad-active" : "vad-status vad-silent";
-  }
-}
-
-// Re-acquire the wake lock when returning to the foreground mid-session.
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible") return;
-  if (wantSession && noSleep && !noSleep.isEnabled) enableNoSleep();
+new OperatorApp({
+  startBtn: document.getElementById("start-btn"),
+  stopBtn: document.getElementById("stop-btn"),
+  statusEl: document.getElementById("status"),
+  levelEl: document.getElementById("audio-level"),
+  listenerCountEl: document.getElementById("listener-count"),
+  vadIndicator: document.getElementById("vad-indicator"),
 });
-
-setInterval(async () => {
-  try {
-    const res = await fetch("/health");
-    const data = await res.json();
-    listenerCountEl.textContent = data.listeners.toString();
-  } catch {
-    // ignore
-  }
-}, 5000);
-
-startBtn.addEventListener("click", startSession);
-stopBtn.addEventListener("click", stopSession);
-
-setStatus("Conectando...", "idle");
-connectWebSocket();

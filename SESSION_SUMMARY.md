@@ -61,10 +61,24 @@ Focus: no dropped words, faster delivery, survive screen lock on both roles.
 ### All pages
 - Google Fonts stylesheet loads async (`media="print"` swap) — first paint no longer blocks on fonts over slow church Wi-Fi.
 
+### Instant playback start + connecting state (same day, follow-up)
+- `/stream` primes new clients with ~3.5s of recent MP3 (was 0.35s): browsers won't start a live stream until ~3s is buffered, so listeners sat silent ~3s while subtitles were already flowing. No added steady-state latency (client settles ~3s behind live either way; the guard trims toward live).
+- Listener button shows "Conectando..." (disabled) until `play()` actually starts.
+
+### Refactor to classes (same day, follow-up)
+Client split into ES modules, one class per responsibility (plain properties,
+no `#private`, for old-phone compatibility):
+- `ws-client.js` — `ReconnectingSocket`: guarded auto-reconnect, safe JSON parse, intentional-close semantics. Shared by both pages.
+- `live-audio.js` — `LiveAudioPlayer`: the live `<audio>` element, stall/error/ended recovery, tiered latency guard, Media Session.
+- `wake-lock.js` — `ScreenWakeLock`: NoSleep wrapper.
+- `mic-capture.js` — `MicCapture`: getUserMedia + worklet wiring, chunk/level callbacks.
+- `listener.js` / `operator.js` — `ListenerApp` / `OperatorApp`: user intent, DOM, status/button state only.
+Server: `config.ts` (`loadConfig()`) centralizes env reading/validation — no `process.env` outside it. Behavior unchanged (integration tests re-run green).
+
 ### Verified
 - Streamer harness: 10s burst → fully delivered at 2x, nothing dropped; ffmpeg SIGKILL → auto-restart, same client keeps receiving.
 - Integration: operator WS terminate → session survives → reconnect + `start_session` resumes → clean stop (real OpenAI session).
-- Mid-stream MP3 capture decodes cleanly; `/stream` headers + 64kbps rate confirmed.
+- Mid-stream MP3 capture decodes cleanly; `/stream` headers + 64kbps rate confirmed; new client receives 3.5s prime instantly.
 
 ## Changes made in this session (2026-05-16)
 
