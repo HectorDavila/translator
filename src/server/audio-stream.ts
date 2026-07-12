@@ -13,9 +13,10 @@ const MP3_BITRATE_KBPS = 64;
 const MAX_QUEUE_BYTES = SAMPLE_RATE * 2 * 60;
 // When the backlog crosses HIGH, encode at 2x realtime until it drains below
 // LOW. Nothing is dropped: clients buffer the burst and their latency guard
-// trims it with a slightly faster playbackRate.
-const CATCHUP_HIGH_BYTES = SAMPLE_RATE * 2 * 2.5;
-const CATCHUP_LOW_BYTES = SAMPLE_RATE * 2 * 0.75;
+// trims it with a slightly faster playbackRate. Kept tight so translated
+// audio spends as little time as possible queued server-side.
+const CATCHUP_HIGH_BYTES = SAMPLE_RATE * 2 * 1.0;
+const CATCHUP_LOW_BYTES = SAMPLE_RATE * 2 * 0.3;
 const MAX_CATCHUP_FRAMES = 50; // bound work if the event loop stalls
 // Recent MP3 replayed instantly to each new client. Browsers won't start a
 // live <audio> stream until they've buffered ~3s; priming that much from
@@ -98,6 +99,12 @@ export class AudioStreamer {
 
   getClientCount(): number {
     return this.clients.size;
+  }
+
+  // How much translated audio is queued ahead of the live MP3 timeline —
+  // subtitles use it to delay themselves into sync with their audio.
+  getBacklogMs(): number {
+    return Math.round((this.queuedBytes / (SAMPLE_RATE * 2)) * 1000);
   }
 
   private spawnEncoder(): void {

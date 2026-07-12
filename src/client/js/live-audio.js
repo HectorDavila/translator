@@ -1,8 +1,11 @@
 // Latency guard tiers: catch up gently, harder if far behind, and jump
 // straight to the live edge when hopelessly behind (it's a live translation —
-// old audio is worthless). playbackRate preserves pitch in browsers.
-const DRIFT_SOFT_S = 1.5;
-const DRIFT_HARD_S = 4;
+// old audio is worthless). playbackRate preserves pitch in browsers. The
+// SOFT floor (~1.2s of buffer) is the stall-safety margin on mobile networks;
+// going lower trades stutters for latency.
+const DRIFT_SOFT_S = 1.2;
+const DRIFT_MID_S = 2;
+const DRIFT_HARD_S = 3.5;
 const DRIFT_JUMP_S = 8;
 const RELOAD_DELAY_MS = 2000;
 const GUARD_INTERVAL_MS = 1000;
@@ -108,7 +111,9 @@ export class LiveAudioPlayer {
         this.audio.playbackRate = 1.0;
       } else {
         this.audio.playbackRate =
-          behind > DRIFT_HARD_S ? 1.2 : behind > DRIFT_SOFT_S ? 1.08 : 1.0;
+          behind > DRIFT_HARD_S ? 1.25 :
+          behind > DRIFT_MID_S ? 1.12 :
+          behind > DRIFT_SOFT_S ? 1.06 : 1.0;
       }
     }, GUARD_INTERVAL_MS);
   }
