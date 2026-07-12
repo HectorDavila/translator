@@ -84,6 +84,14 @@ export class OpenAITranslator {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
+  // Input language is auto-detected by the model; only the output language is
+  // configurable. Safe mid-session: the API accepts live session.update.
+  setTargetLanguage(language: string): void {
+    if (this.targetLanguage === language) return;
+    this.targetLanguage = language;
+    this.configureSession(); // no-op while disconnected; sent again on open
+  }
+
   private createConnection(): void {
     this.ws = new WebSocket(OPENAI_REALTIME_URL, {
       headers: {

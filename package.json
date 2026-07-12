@@ -9,6 +9,7 @@
     "build:client": "mkdir -p dist/client/js dist/client/css && cp src/client/js/*.js dist/client/js/ && cp src/client/css/*.css dist/client/css/ && cp src/client/*.html src/client/sw.js src/client/manifest.json dist/client/",
     "build": "npm run build:server && npm run build:client",
     "start": "node dist/server/index.js",
+    "test": "node test/client-smoke-test.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {

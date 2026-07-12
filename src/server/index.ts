@@ -41,7 +41,7 @@ app.get("/health", (_req, res) => {
 
 // Settings the operator page needs before it starts capturing.
 app.get("/api/config", (_req, res) => {
-  res.json({ vadMode: config.vadMode });
+  res.json({ vadMode: config.vadMode, targetLanguage: config.targetLanguage });
 });
 
 app.get("/api/listener-url", (req, res) => {

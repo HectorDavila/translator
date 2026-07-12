@@ -10,16 +10,18 @@ const METER_GAIN = 700; // rms ≈ 0.14 paints the level bar full
 // blips: the server keeps the session in a grace period and we re-send
 // start_session on reconnect.
 class OperatorApp {
-  constructor({ startBtn, stopBtn, statusEl, levelEl, listenerCountEl, vadIndicator }) {
+  constructor({ startBtn, stopBtn, statusEl, levelEl, listenerCountEl, vadIndicator, languageSelect }) {
     this.startBtn = startBtn;
     this.stopBtn = stopBtn;
     this.statusEl = statusEl;
     this.levelEl = levelEl;
     this.listenerCountEl = listenerCountEl;
     this.vadIndicator = vadIndicator;
+    this.languageSelect = languageSelect;
     this.wantSession = false; // pressed Iniciar and hasn't pressed Detener
     this.continuous = false; // VAD mode, resolved from /api/config on start
     this.configPromise = this.fetchConfig();
+    this.initLanguage();
 
     this.wakeLock = new ScreenWakeLock();
 
@@ -51,14 +53,49 @@ class OperatorApp {
     return `${protocol}//${location.host}/ws/operator`;
   }
 
-  // Server-side settings (VAD mode). Falls back to gated if unreachable.
+  // Server-side settings (VAD mode, default language). Safe fallbacks.
   async fetchConfig() {
     try {
       const res = await fetch("/api/config");
       return await res.json();
     } catch {
-      return { vadMode: "gated" };
+      return { vadMode: "gated", targetLanguage: "es" };
     }
+  }
+
+  // Broadcast (output) language; the sermon's language is auto-detected by
+  // the translation model, so only the output side is selectable.
+  async initLanguage() {
+    const saved = this.readSavedLanguage();
+    if (saved) {
+      this.languageSelect.value = saved;
+    } else {
+      const { targetLanguage } = await this.configPromise;
+      this.languageSelect.value = targetLanguage || "es";
+    }
+    this.languageSelect.addEventListener("change", () => {
+      this.saveLanguage(this.languageSelect.value);
+      // Takes effect live if the session is already running.
+      if (this.wantSession) {
+        this.socket.sendJson({ type: "set_language", language: this.languageSelect.value });
+      }
+    });
+  }
+
+  // localStorage can throw (e.g. Safari private mode); never let that break
+  // the panel — language memory is a nice-to-have.
+  readSavedLanguage() {
+    try {
+      return localStorage.getItem("broadcastLanguage");
+    } catch {
+      return null;
+    }
+  }
+
+  saveLanguage(value) {
+    try {
+      localStorage.setItem("broadcastLanguage", value);
+    } catch {}
   }
 
   async startSession() {
@@ -71,7 +108,7 @@ class OperatorApp {
       return;
     }
     this.wantSession = true;
-    this.socket.sendJson({ type: "start_session" });
+    this.sendStartSession();
     await this.wakeLock.enable(); // keep the operator device awake
     this.startBtn.disabled = true;
     this.stopBtn.disabled = false;
@@ -93,10 +130,17 @@ class OperatorApp {
     this.startBtn.disabled = false;
     // Mid-session reconnect: resume before the server's grace period ends.
     if (this.wantSession && this.mic.active) {
-      this.socket.sendJson({ type: "start_session" });
+      this.sendStartSession();
       this.startBtn.disabled = true;
       this.stopBtn.disabled = false;
     }
+  }
+
+  sendStartSession() {
+    this.socket.sendJson({
+      type: "start_session",
+      language: this.languageSelect.value,
+    });
   }
 
   handleClose() {
@@ -150,4 +194,5 @@ new OperatorApp({
   levelEl: document.getElementById("audio-level"),
   listenerCountEl: document.getElementById("listener-count"),
   vadIndicator: document.getElementById("vad-indicator"),
+  languageSelect: document.getElementById("language-select"),
 });

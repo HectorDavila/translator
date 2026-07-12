@@ -8,6 +8,12 @@ import type { SessionState, OperatorMessage } from "./types.js";
 // blip on the operator's device doesn't cut the sermon for every listener.
 const OPERATOR_GRACE_MS = 60_000;
 
+// The 13 output languages gpt-realtime-translate can speak (input is
+// auto-detected, so only the output side is configurable).
+export const OUTPUT_LANGUAGES = new Set([
+  "en", "es", "pt", "fr", "de", "it", "ru", "zh", "ja", "ko", "hi", "id", "vi",
+]);
+
 export class SessionManager {
   private state: SessionState = "idle";
   private translator: OpenAITranslator;
@@ -118,13 +124,28 @@ export class SessionManager {
   private handleOperatorMessage(message: OperatorMessage): void {
     switch (message.type) {
       case "start_session":
+        this.applyLanguage(message.language);
         this.startSession();
         break;
 
       case "stop_session":
         this.stopSession();
         break;
+
+      case "set_language":
+        this.applyLanguage(message.language);
+        break;
     }
+  }
+
+  private applyLanguage(language: string | undefined): void {
+    if (!language) return;
+    if (!OUTPUT_LANGUAGES.has(language)) {
+      console.error(`[Session] Ignoring unsupported output language: ${language}`);
+      return;
+    }
+    console.log(`[Session] Output language: ${language}`);
+    this.translator.setTargetLanguage(language);
   }
 
   private startSession(): void {

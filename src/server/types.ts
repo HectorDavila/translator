@@ -4,7 +4,9 @@ export type SessionState = "idle" | "active" | "error";
 
 // Operator audio is sent as binary frames; only control messages are JSON.
 export interface OperatorMessage {
-  type: "start_session" | "stop_session";
+  type: "start_session" | "stop_session" | "set_language";
+  /** Output language for the broadcast (start_session / set_language). */
+  language?: string;
 }
 
 // Listener audio is sent as binary frames; only transcript/status are JSON.
