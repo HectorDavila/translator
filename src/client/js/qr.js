@@ -22,13 +22,13 @@ async function init() {
     render(url);
 
     if (source === "fallback" && /localhost|127\.0\.0\.1/.test(url)) {
-      showWarning("No LAN IP detected on the server. Set PUBLIC_HOST or access it via your network IP.");
+      showWarning("Servidor sin LAN IP detectada. Configura PUBLIC_HOST o accede vía la IP de tu red.");
     }
   } catch (err) {
     const fallback = `${location.protocol}//${location.host}/listener.html`;
     render(fallback);
     if (/localhost|127\.0\.0\.1/.test(location.host)) {
-      showWarning("You are on localhost. Phones cannot scan this URL. Access the server via its LAN IP.");
+      showWarning("Estás en localhost. Los celulares no pueden escanear esta URL. Accede al servidor desde la IP de la LAN.");
     }
   }
 }
