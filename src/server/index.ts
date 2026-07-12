@@ -39,9 +39,14 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// Settings the operator page needs before it starts capturing.
+// Settings the client pages need up front: the operator reads vadMode and the
+// default language; the listener localizes its UI to the live language.
 app.get("/api/config", (_req, res) => {
-  res.json({ vadMode: config.vadMode, targetLanguage: config.targetLanguage });
+  res.json({
+    vadMode: config.vadMode,
+    targetLanguage: config.targetLanguage,
+    language: sessionManager.getTargetLanguage(),
+  });
 });
 
 app.get("/api/listener-url", (req, res) => {

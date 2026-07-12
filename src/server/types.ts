@@ -15,6 +15,8 @@ export interface ListenerMessage {
   source?: "original" | "translated";
   text?: string;
   state?: SessionState;
+  /** Current broadcast language; the listener page localizes its UI to it. */
+  language?: string;
 }
 
 export interface OpenAIEvent {

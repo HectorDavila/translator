@@ -113,6 +113,11 @@ export class LiveAudioPlayer {
     }, GUARD_INTERVAL_MS);
   }
 
+  setMediaMetadata(mediaMetadata) {
+    this.mediaMetadata = mediaMetadata;
+    if (this.audio) this.setupMediaSession();
+  }
+
   // Lock-screen metadata and controls.
   setupMediaSession() {
     if (!("mediaSession" in navigator)) return;

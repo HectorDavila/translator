@@ -27,6 +27,8 @@ globalThis.location = { protocol: "https:", host: "test.local" };
 globalThis.document = {
   listeners: {},
   visibilityState: "visible",
+  documentElement: { lang: "es" },
+  title: "",
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
   getElementById: () => fakeElement(),
 };
@@ -67,7 +69,13 @@ globalThis.AudioWorkletNode = class {
   constructor() { this.port = { onmessage: null }; }
   disconnect() {}
 };
-globalThis.fetch = async () => ({ json: async () => ({ vadMode: "continuous", targetLanguage: "es", listeners: 2 }) });
+// language: "en" also exercises the listener page's live localization path.
+globalThis.fetch = async () => ({ json: async () => ({ vadMode: "continuous", targetLanguage: "es", language: "en", listeners: 2 }) });
+
+// Async constructor paths (config fetch -> applyLanguage) fail via promise
+// rejections, not throws — treat any unhandled rejection as a failure.
+const unhandledRejections = [];
+process.on("unhandledRejection", (err) => unhandledRejections.push(err));
 globalThis.localStorage = {
   _map: new Map(),
   getItem(k) { return this._map.get(k) ?? null; },
@@ -167,6 +175,12 @@ await check("all this.method() calls exist on their class", async () => {
     }
   }
 });
+
+await new Promise((r) => setTimeout(r, 100)); // let async constructor paths settle
+if (unhandledRejections.length) {
+  failures.push("unhandled rejection");
+  console.error(`FAIL: unhandled rejection -> ${unhandledRejections[0]?.message || unhandledRejections[0]}`);
+}
 
 if (failures.length) {
   console.error(`\n${failures.length} failure(s)`);

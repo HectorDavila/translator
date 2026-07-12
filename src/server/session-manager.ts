@@ -105,7 +105,11 @@ export class SessionManager {
   handleListenerConnection(ws: WebSocket): void {
     this.broadcaster.addListener(ws);
 
-    const statusMsg = JSON.stringify({ type: "status", state: this.state });
+    const statusMsg = JSON.stringify({
+      type: "status",
+      state: this.state,
+      language: this.getTargetLanguage(),
+    });
     ws.send(statusMsg);
 
     console.log(
@@ -119,6 +123,10 @@ export class SessionManager {
 
   getListenerCount(): number {
     return this.broadcaster.getListenerCount();
+  }
+
+  getTargetLanguage(): string {
+    return this.translator.getTargetLanguage();
   }
 
   private handleOperatorMessage(message: OperatorMessage): void {
@@ -146,6 +154,8 @@ export class SessionManager {
     }
     console.log(`[Session] Output language: ${language}`);
     this.translator.setTargetLanguage(language);
+    // Listeners localize their UI to the broadcast language — tell them now.
+    this.broadcaster.broadcastStatus(this.state, language);
   }
 
   private startSession(): void {
@@ -185,7 +195,7 @@ export class SessionManager {
 
   private setState(newState: SessionState): void {
     this.state = newState;
-    this.broadcaster.broadcastStatus(newState);
+    this.broadcaster.broadcastStatus(newState, this.getTargetLanguage());
 
     if (this.operatorWs && this.operatorWs.readyState === this.operatorWs.OPEN) {
       this.operatorWs.send(JSON.stringify({ type: "status", state: newState }));

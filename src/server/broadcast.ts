@@ -22,8 +22,8 @@ export class Broadcaster {
     this.broadcastJson({ type: "transcript", source, text });
   }
 
-  broadcastStatus(state: ListenerMessage["state"]): void {
-    this.broadcastJson({ type: "status", state });
+  broadcastStatus(state: ListenerMessage["state"], language?: string): void {
+    this.broadcastJson({ type: "status", state, language });
   }
 
   getListenerCount(): number {

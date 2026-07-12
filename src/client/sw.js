@@ -1,4 +1,4 @@
-const CACHE_NAME = "church-translator-v4";
+const CACHE_NAME = "church-translator-v5";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
@@ -12,6 +12,7 @@ const STATIC_ASSETS = [
   "/js/mic-capture.js",
   "/js/ws-client.js",
   "/js/wake-lock.js",
+  "/js/i18n.js",
   "/js/nosleep.min.js",
 ];
 
