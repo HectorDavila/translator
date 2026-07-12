@@ -136,6 +136,11 @@ class OperatorApp {
       // transient — next poll will retry
     }
   }
+
+  setStatus(text, type) {
+    this.statusEl.textContent = text;
+    this.statusEl.className = `status status-${type}`;
+  }
 }
 
 new OperatorApp({
