@@ -39,6 +39,11 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// Settings the operator page needs before it starts capturing.
+app.get("/api/config", (_req, res) => {
+  res.json({ vadMode: config.vadMode });
+});
+
 app.get("/api/listener-url", (req, res) => {
   const protocol = (req.headers["x-forwarded-proto"] as string) || req.protocol;
   if (config.publicHost) {

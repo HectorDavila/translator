@@ -18,6 +18,8 @@ class OperatorApp {
     this.listenerCountEl = listenerCountEl;
     this.vadIndicator = vadIndicator;
     this.wantSession = false; // pressed Iniciar and hasn't pressed Detener
+    this.continuous = false; // VAD mode, resolved from /api/config on start
+    this.configPromise = this.fetchConfig();
 
     this.wakeLock = new ScreenWakeLock();
 
@@ -49,9 +51,21 @@ class OperatorApp {
     return `${protocol}//${location.host}/ws/operator`;
   }
 
+  // Server-side settings (VAD mode). Falls back to gated if unreachable.
+  async fetchConfig() {
+    try {
+      const res = await fetch("/api/config");
+      return await res.json();
+    } catch {
+      return { vadMode: "gated" };
+    }
+  }
+
   async startSession() {
     try {
-      await this.mic.start();
+      const { vadMode } = await this.configPromise;
+      this.continuous = vadMode === "continuous";
+      await this.mic.start({ gated: !this.continuous });
     } catch (err) {
       this.setStatus(`Error: ${err.message}`, "error");
       return;
@@ -103,10 +117,14 @@ class OperatorApp {
   // Driven by worklet messages every ~100ms — works with the screen locked.
   updateMeter(rms, speaking) {
     this.levelEl.style.width = `${Math.min(100, Math.round(rms * METER_GAIN))}%`;
-    if (this.vadIndicator) {
+    if (!this.vadIndicator) return;
+    if (this.continuous) {
+      // Everything streams in continuous mode; only reflect speech detection.
+      this.vadIndicator.textContent = speaking ? "Enviando audio (continuo)" : "Enviando silencio (continuo)";
+    } else {
       this.vadIndicator.textContent = speaking ? "Enviando audio" : "En silencio (pausado)";
-      this.vadIndicator.className = speaking ? "vad-status vad-active" : "vad-status vad-silent";
     }
+    this.vadIndicator.className = speaking ? "vad-status vad-active" : "vad-status vad-silent";
   }
 
   async pollListenerCount() {

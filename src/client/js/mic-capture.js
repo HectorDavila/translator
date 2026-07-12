@@ -18,7 +18,8 @@ export class MicCapture {
     return this.stream !== null;
   }
 
-  async start() {
+  // options.gated=false streams continuously (no VAD cuts); default is gated.
+  async start({ gated = true } = {}) {
     if (this.active) return;
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -32,7 +33,9 @@ export class MicCapture {
       await this.context.audioWorklet.addModule("/js/audio-worklet.js");
 
       const source = this.context.createMediaStreamSource(this.stream);
-      this.workletNode = new AudioWorkletNode(this.context, "pcm-capture-processor");
+      this.workletNode = new AudioWorkletNode(this.context, "pcm-capture-processor", {
+        processorOptions: { gated },
+      });
       source.connect(this.workletNode);
 
       this.workletNode.port.onmessage = (event) => {

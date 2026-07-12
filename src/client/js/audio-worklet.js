@@ -9,8 +9,13 @@ const HANGOVER_CHUNKS = 15; // keep sending ~1.5s after speech stops
 const PREROLL_CHUNKS = 3; // ~300ms flushed retroactively so onsets aren't clipped
 
 class PCMCaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
+    // gated (default): only stream while speech is detected — silence isn't
+    // billed. Continuous: stream everything, per OpenAI's guidance; the
+    // utterance cuts that gating creates encourage translation voice changes.
+    const opts = (options && options.processorOptions) || {};
+    this.gated = opts.gated !== false;
     this.buffer = [];
     this.bufferLength = 0;
     this.resampleRatio = TARGET_SAMPLE_RATE / sampleRate;
@@ -40,7 +45,12 @@ class PCMCaptureProcessor extends AudioWorkletProcessor {
     this.silentChunks = rms >= VAD_RMS_THRESHOLD ? 0 : this.silentChunks + 1;
     const speaking = this.silentChunks <= HANGOVER_CHUNKS;
 
-    if (speaking) {
+    if (!this.gated) {
+      // Continuous mode: everything is sent; speaking/rms still feed the UI.
+      this.port.postMessage({ type: "audio", data: pcm16, rms, speaking }, [
+        pcm16.buffer,
+      ]);
+    } else if (speaking) {
       if (!this.speaking) {
         for (const chunk of this.preroll) {
           this.port.postMessage({ type: "audio", data: chunk, rms, speaking }, [
