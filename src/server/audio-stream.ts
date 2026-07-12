@@ -17,7 +17,12 @@ const MAX_QUEUE_BYTES = SAMPLE_RATE * 2 * 60;
 const CATCHUP_HIGH_BYTES = SAMPLE_RATE * 2 * 2.5;
 const CATCHUP_LOW_BYTES = SAMPLE_RATE * 2 * 0.75;
 const MAX_CATCHUP_FRAMES = 50; // bound work if the event loop stalls
-const PRIME_BYTES = Math.round(((MP3_BITRATE_KBPS * 1000) / 8) * 0.35); // ~0.35s of recent MP3 to start new clients fast
+// Recent MP3 replayed instantly to each new client. Browsers won't start a
+// live <audio> stream until they've buffered ~3s; priming that much from
+// history makes playback start immediately instead of sitting silent while
+// realtime data trickles in. It does not add latency: the client would end up
+// ~3s behind live either way, and the latency guard then trims toward live.
+const PRIME_BYTES = Math.round(((MP3_BITRATE_KBPS * 1000) / 8) * 3.5);
 const MAX_HTTP_BACKLOG = 256 * 1024; // kick clients this far behind; they reconnect at the live edge
 const RESTART_DELAY_MS = 1000;
 

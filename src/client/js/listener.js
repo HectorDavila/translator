@@ -139,13 +139,18 @@ async function connect() {
   setupMediaSession();
 
   userDisconnected = false;
+  connectBtn.disabled = true;
+  connectBtn.textContent = "Conectando...";
   player.src = STREAM_URL; // (re)connect at the live edge
   try {
     await player.play(); // requires the user gesture we're in
   } catch (err) {
+    connectBtn.disabled = false;
+    connectBtn.textContent = "Conectar";
     setStatus("Toca de nuevo para activar el audio", "error");
     return;
   }
+  connectBtn.disabled = false;
 
   await enableNoSleep();
   startLatencyGuard();
